@@ -1,0 +1,37 @@
+{
+  "name": "studyplay",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "StudyPlay - Interactive College Notes, System Diagrams, Hard Quizzes & Active Recall Flashcards",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "studyplay",
+    "education",
+    "college-notes",
+    "mca",
+    "ai",
+    "quiz",
+    "flashcards"
+  ],
+  "author": "Fairish Ayan",
+  "license": "ISC",
+  "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "canvas-confetti": "^1.9.4",
+    "lucide-react": "^1.48.0",
+    "marked": "^18.0.14",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
+    "autoprefixer": "^10.6.1",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.1"
+  }
+}
