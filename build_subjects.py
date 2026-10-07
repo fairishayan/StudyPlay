@@ -1,7 +1,11 @@
-# build_subjects.py
+
+# build_subjects.py — v2
+# Fixed: Each numbered ## heading becomes its own concept
+# No more "3 concepts per unit" collapse
 import os
 import re
 import json
+import sys
 from diagram_bank import get_diagram
 from quiz_bank import generate_quiz_and_cards
 
@@ -59,74 +63,226 @@ SUBJECTS_CONFIG = [
     }
 ]
 
+
 def slugify(text):
-    text = re.sub(r'[^a-zA-Z0-9\s-]', '', text).strip().lower()
-    return re.sub(r'[\s]+', '-', text)
+    text = re.sub(r'[^a-zA-Z0-9\s-]', '', str(text)).strip().lower()
+    text = re.sub(r'[\s]+', '-', text)
+    return text[:60].strip('-')
+
+
+def is_numbered_heading(heading_text):
+    """Check if a ## heading starts with a number like '1. ' or '12. '"""
+    return re.match(r'^\d+\.\s+', heading_text.strip()) is not None
+
+
+def clean_heading(heading_text):
+    """Remove leading numbering like '1. ' from heading."""
+    return re.sub(r'^\d+\.\s+', '', heading_text.strip()).strip()
+
+
+def build_concept(subject_code, unit_num, c_idx, title, notes, diagram_hint=None):
+    """Build a single concept object from source notes."""
+    c_slug = slugify(title)
+    if not c_slug:
+        c_slug = f"concept-{unit_num}-{c_idx}"
+
+    # Estimate read time: ~1200 chars per minute, clamp between 8 and 45 min
+    char_count = len(notes)
+    est_min = max(8, min(45, char_count // 1200))
+
+    summary = f"Complete study notes on {title}: definitions, principles, worked examples, formulas, and exam-relevant details derived from the syllabus source."
+
+    # Diagram selection
+    diag_key = f"{subject_code} {title} {diagram_hint or ''}".strip().lower()
+    try:
+        diag_svg = get_diagram(diag_key, title)
+    except Exception as e:
+        print(f"    [warn] diagram failed for '{title}': {e}")
+        diag_svg = get_diagram("flow", title)
+
+    # Quiz + flashcards
+    try:
+        quiz, cards = generate_quiz_and_cards(subject_code, unit_num, c_idx, title, notes)
+    except Exception as e:
+        print(f"    [warn] quiz generation failed for '{title}': {e}")
+        quiz, cards = [], []
+
+    return {
+        "id": c_slug,
+        "title": title,
+        "subtitle": f"{subject_code.upper()} Unit {unit_num} Concept {c_idx}",
+        "summary": summary,
+        "estimatedMinutes": est_min,
+        "notes": notes.strip(),
+        "diagrams": [
+            {
+                "id": f"diag-{subject_code}-u{unit_num}-c{c_idx}",
+                "title": title,
+                "caption": f"Concept visualization for {title}",
+                "svg": diag_svg
+            }
+        ],
+        "quiz": quiz,
+        "flashcards": cards
+    }
+
+
+def extract_concepts_from_unit(subject_code, unit_num, unit_text, title_prefix=""):
+    """
+    Extract concepts from a single unit's text.
+
+    Strategy:
+    - Split by '## ' headings
+    - Each NUMBERED heading (e.g. '## 1. Topic') becomes its own concept
+    - NON-numbered headings (e.g. '## UNIT 1 COMPLETE FLOW') become appendices
+      attached to the previous concept
+    - Preserves content between headings as notes for the preceding concept
+    """
+    # Split by ## headings (lookahead keeps the heading with its section)
+    parts = re.split(r'(?m)(?=^##\s+)', unit_text)
+    unit_intro = parts[0].strip() if parts else ""
+    sections = parts[1:] if len(parts) > 1 else []
+
+    if not sections:
+        # Fallback: whole unit becomes one concept
+        title = clean_heading(unit_text.split('\n')[0].replace('#', '').strip()) or f"Unit {unit_num} Overview"
+        return [build_concept(subject_code, unit_num, 1, title_prefix + title, unit_text)]
+
+    concepts = []
+    appendix = []
+
+    for sec in sections:
+        lines = sec.split('\n', 1)
+        first_line = lines[0].strip() if lines else ""
+        heading = first_line.replace('##', '', 1).strip()
+        body = lines[1] if len(lines) > 1 else ""
+
+        if is_numbered_heading(heading):
+            clean_title = clean_heading(heading)
+            full_notes = f"## {clean_title}\n\n{body.strip()}" if body else f"## {clean_title}"
+            concepts.append({
+                "title": title_prefix + clean_title,
+                "content": full_notes
+            })
+        else:
+            # Non-numbered section (summary, comparison, etc.)
+            appendix.append({
+                "title": heading,
+                "content": sec.strip()
+            })
+
+    # If we found no numbered sections, treat every ## as a concept
+        # If we found no numbered sections, treat every ## as a concept
+        # Prepend unit_intro (text before first ##) to the first concept
+    # Strip the "# UNIT X: ..." header line, keep the intro paragraph
+    if unit_intro.strip() and concepts:
+        intro_lines = unit_intro.strip().split('\n', 1)
+        # Skip the header line, keep rest
+        if len(intro_lines) > 1 and intro_lines[1].strip():
+            real_intro = intro_lines[1].strip()
+            concepts[0]["content"] = real_intro + "\n\n---\n\n" + concepts[0]["content"]
+
+    if not concepts:
+        for sec in sections:
+            lines = sec.split('\n', 1)
+            heading = lines[0].strip().replace('##', '', 1).strip()
+            body = lines[1] if len(lines) > 1 else ""
+            concepts.append({
+                "title": title_prefix + heading,
+                "content": f"## {heading}\n\n{body.strip()}"
+            })
+        appendix = []
+
+    # Attach appendices (summary/reference sections) to the LAST concept
+    if appendix and concepts:
+        extra = "\n\n---\n\n".join([ap["content"] for ap in appendix])
+        concepts[-1]["content"] += "\n\n---\n\n" + extra
+
+    # Build concept objects
+    result = []
+    used_slugs = set()
+    for idx, c in enumerate(concepts):
+        c_title = c["title"].strip()
+        base_slug = slugify(c_title) or f"concept-{idx+1}"
+        # Ensure slug uniqueness
+        slug = base_slug
+        suffix = 2
+        while slug in used_slugs:
+            slug = f"{base_slug}-{suffix}"
+            suffix += 1
+        used_slugs.add(slug)
+
+        concept_obj = build_concept(subject_code, unit_num, idx + 1, c_title, c["content"])
+        concept_obj["id"] = slug  # override to keep unique
+        result.append(concept_obj)
+
+    return result
+
 
 def parse_markdown_subject(filepath, subject_code):
     with open(filepath, 'r', encoding='utf-8') as f:
         text = f.read()
 
-    # Split into units
-    raw_units = [u for u in re.split(r'(?m)(?=^#\s+UNIT\s+)', text) if u.strip().startswith('# UNIT')]
-    
-    # Special handling for CA453 where Unit 1 has 4 parts
+    # Split into top-level unit chunks
+    raw_units = [u for u in re.split(r'(?m)(?=^#\s+UNIT\s+)', text)
+                 if u.strip().startswith('# UNIT')]
+
+    # ─────────────────────────────────────────────────────────
+    # SPECIAL CASE: CA453 (C Programming) — Unit 1 has 4 parts
+    # ─────────────────────────────────────────────────────────
     if subject_code.lower() == "ca453":
-        # First 4 chunks in raw_units are Part 1, 2, 3, 4 of Unit 1
         part1_to_4 = raw_units[:4]
-        other_units = raw_units[4:] # Units 2, 3, 4, 5
-        parsed_units = []
-        
-        # Unit 1
-        unit1_title = "Unit 1: Computer Fundamentals, Software, Networks & Internet Protocols"
+        other_units = raw_units[4:]
+
+        # Merge all 4 parts into Unit 1, keeping part prefixes
         unit1_concepts = []
-        part_names = [
-            ("Computer Fundamentals & Hardware Generations", "computer-fundamentals", "kmap"),
-            ("Software Classification, Operating Systems & DOS", "software-and-dos", "flow"),
-            ("Computer Networks & Topologies", "computer-networks", "network"),
-            ("Internet Architecture & TCP/IP Model", "internet-and-tcp-ip", "tcp")
-        ]
-        for p_idx, (p_text, (p_title, p_slug, p_diag)) in enumerate(zip(part1_to_4, part_names)):
-            secs = [s for s in re.split(r'(?m)(?=^##\s+)', p_text) if s.strip().startswith('## ')]
-            notes_content = p_text.strip()
-            summary = f"In-depth analysis of {p_title.lower()} covering foundational principles, system taxonomies, and architectural design."
-            diag_svg = get_diagram(p_diag, p_title)
-            quiz, cards = generate_quiz_and_cards("ca453", 1, p_idx + 1, p_title, notes_content)
-            unit1_concepts.append({
-                "id": p_slug,
-                "title": p_title,
-                "subtitle": f"CA453 Unit 1 Part {p_idx+1} Academic Mastery",
-                "summary": summary,
-                "estimatedMinutes": 20,
-                "notes": notes_content,
-                "diagrams": [
-                    {
-                        "id": f"diag-ca453-u1-{p_slug}",
-                        "title": p_title,
-                        "caption": f"Architectural visualization of {p_title.lower()}",
-                        "svg": diag_svg
-                    }
-                ],
-                "quiz": quiz,
-                "flashcards": cards
-            })
-            
-        parsed_units.append({
+        for p_idx, p_text in enumerate(part1_to_4):
+            part_header = p_text.strip().split('\n')[0].replace('#', '').strip()
+            # Extract "PART N: TITLE" from header
+            m = re.search(r'PART\s+\d+[:\-]\s*(.+)', part_header, re.IGNORECASE)
+            part_label = m.group(1).strip() if m else f"Part {p_idx+1}"
+            prefix = f"[{part_label}] " if len(part1_to_4) > 1 else ""
+            concepts = extract_concepts_from_unit(
+                subject_code="ca453",
+                unit_num=1,
+                unit_text=p_text,
+                title_prefix=prefix
+            )
+            # Re-number them sequentially
+            for c in concepts:
+                c["subtitle"] = f"CA453 Unit 1 Concept {len(unit1_concepts) + 1}"
+            unit1_concepts.extend(concepts)
+
+        # Re-index slugs to avoid collisions
+        seen = set()
+        for i, c in enumerate(unit1_concepts):
+            base = slugify(c["title"])
+            slug = base
+            n = 2
+            while slug in seen:
+                slug = f"{base}-{n}"
+                n += 1
+            seen.add(slug)
+            c["id"] = slug
+
+        parsed_units = [{
             "id": "unit-1",
             "unitNumber": 1,
-            "title": unit1_title,
+            "title": "Unit 1: Computer Fundamentals, Software, Networks & Internet Protocols",
             "co": "CO1",
             "description": "Comprehensive foundation in computer architecture, hardware evolution, software categories, network topologies, and TCP/IP stack.",
             "concepts": unit1_concepts
-        })
-        
-        # Now Units 2 to 5 for CA453
+        }]
+
+        # Units 2..5
         for u_idx, u_text in enumerate(other_units):
             actual_unit_num = u_idx + 2
-            u_lines = u_text.strip().split('\n')
-            u_header = u_lines[0].replace('# ', '').strip()
-            secs = [s for s in re.split(r'(?m)(?=^##\s+)', u_text) if s.strip().startswith('## ')]
-            concepts = split_sections_into_concepts("ca453", actual_unit_num, u_header, secs, u_text)
+            u_header = u_text.strip().split('\n')[0].replace('#', '').strip()
+            concepts = extract_concepts_from_unit(
+                subject_code="ca453",
+                unit_num=actual_unit_num,
+                unit_text=u_text
+            )
             parsed_units.append({
                 "id": f"unit-{actual_unit_num}",
                 "unitNumber": actual_unit_num,
@@ -135,105 +291,81 @@ def parse_markdown_subject(filepath, subject_code):
                 "description": f"Curriculum coverage for Unit {actual_unit_num}: {u_header}.",
                 "concepts": concepts
             })
-        return parsed_units
-    else:
-        # Standard subjects (CA452, CA454, CA455, CA456)
-        parsed_units = []
-        for u_idx, u_text in enumerate(raw_units):
-            actual_unit_num = u_idx + 1
-            u_lines = u_text.strip().split('\n')
-            u_header = u_lines[0].replace('# ', '').strip()
-            secs = [s for s in re.split(r'(?m)(?=^##\s+)', u_text) if s.strip().startswith('## ')]
-            concepts = split_sections_into_concepts(subject_code, actual_unit_num, u_header, secs, u_text)
-            parsed_units.append({
-                "id": f"unit-{actual_unit_num}",
-                "unitNumber": actual_unit_num,
-                "title": f"Unit {actual_unit_num}: {u_header}",
-                "co": f"CO{actual_unit_num}",
-                "description": f"Deep study notes and assessment engine for Unit {actual_unit_num}.",
-                "concepts": concepts
-            })
+
         return parsed_units
 
-def split_sections_into_concepts(subject_code, unit_num, unit_header, secs, full_unit_text):
-    num_secs = len(secs)
-    if num_secs == 0:
-        secs = [full_unit_text]
-        num_secs = 1
-
-    # Split into 3 balanced concepts
-    c1_count = max(1, num_secs // 3)
-    c2_count = max(1, (num_secs - c1_count) // 2)
-    
-    group1 = secs[:c1_count]
-    group2 = secs[c1_count:c1_count + c2_count]
-    group3 = secs[c1_count + c2_count:]
-    if not group3:
-        group3 = group2
-        group2 = []
-    
-    groups = [g for g in [group1, group2, group3] if g]
-    
-    concepts = []
-    for c_idx, g_secs in enumerate(groups):
-        first_h2 = ""
-        for line in g_secs[0].split('\n'):
-            if line.startswith('## '):
-                first_h2 = line.replace('## ', '').strip()
-                # strip numbering like 1. 2.
-                first_h2 = re.sub(r'^[0-9]+\.\s*', '', first_h2)
-                break
-        
-        c_title = f"{first_h2}" if first_h2 else f"Part {c_idx+1} Principles"
-        # make slug
-        c_slug = slugify(c_title)
-        if not c_slug or c_slug in [c['id'] for c in concepts]:
-            c_slug = f"concept-{c_idx+1}-{slugify(unit_header)[:20]}"
-
-        notes_content = "\n\n".join(g_secs).strip()
-        summary = f"Comprehensive study notes covering {c_title} with full theoretical rigor, proofs, diagrams, and code implementations."
-        
-        # diagram selection
-        diag_key = f"{subject_code} {unit_header} {c_title}".lower()
-        diag_svg = get_diagram(diag_key, c_title)
-        
-        quiz, cards = generate_quiz_and_cards(subject_code, unit_num, c_idx + 1, c_title, notes_content)
-        
-        concepts.append({
-            "id": c_slug,
-            "title": c_title,
-            "subtitle": f"{subject_code.upper()} Unit {unit_num} Concept {c_idx+1}",
-            "summary": summary,
-            "estimatedMinutes": 18 + (len(g_secs) * 2),
-            "notes": notes_content,
-            "diagrams": [
-                {
-                    "id": f"diag-{subject_code}-u{unit_num}-c{c_idx+1}",
-                    "title": c_title,
-                    "caption": f"Polished SVG architectural visualization for {c_title}",
-                    "svg": diag_svg
-                }
-            ],
-            "quiz": quiz,
-            "flashcards": cards
+    # ─────────────────────────────────────────────────────────
+    # STANDARD SUBJECTS (CA452, CA454, CA455, CA456)
+    # ─────────────────────────────────────────────────────────
+    parsed_units = []
+    for u_idx, u_text in enumerate(raw_units):
+        actual_unit_num = u_idx + 1
+        u_header = u_text.strip().split('\n')[0].replace('#', '').strip()
+        concepts = extract_concepts_from_unit(
+            subject_code=subject_code,
+            unit_num=actual_unit_num,
+            unit_text=u_text
+        )
+        parsed_units.append({
+            "id": f"unit-{actual_unit_num}",
+            "unitNumber": actual_unit_num,
+            "title": f"Unit {actual_unit_num}: {u_header}",
+            "co": f"CO{actual_unit_num}",
+            "description": f"Deep study notes and assessment engine for Unit {actual_unit_num}.",
+            "concepts": concepts
         })
-    return concepts
+    return parsed_units
+
+
+def audit_only():
+    """Print what concepts WILL be generated without writing files."""
+    print("=" * 70)
+    print("AUDIT MODE — NO FILES WILL BE WRITTEN")
+    print("=" * 70)
+    grand_total = 0
+    for scfg in SUBJECTS_CONFIG:
+        md_path = os.path.join(BASE_DIR, scfg["filename"])
+        print(f"\n▶ {scfg['code']} — {scfg['title']}")
+        print(f"  Source: {scfg['filename']}")
+        units = parse_markdown_subject(md_path, scfg["id"])
+        subj_total = 0
+        for u in units:
+            n = len(u["concepts"])
+            subj_total += n
+            print(f"  Unit {u['unitNumber']:>2}: {n:>3} concepts")
+            for c in u["concepts"][:5]:
+                print(f"      • {c['title']}  ({c['estimatedMinutes']} min)")
+            if n > 5:
+                print(f"      ... and {n - 5} more")
+        print(f"  ── SUBJECT TOTAL: {subj_total} concepts")
+        grand_total += subj_total
+    print("\n" + "=" * 70)
+    print(f"GRAND TOTAL: {grand_total} concepts across all 5 subjects")
+    print("=" * 70)
+
 
 def build_all():
     search_index = []
     registered_subjects = []
 
-    print("Beginning StudyPlay Subject Processing...")
+    print("Beginning StudyPlay Subject Processing (v2 — full concept extraction)...\n")
 
     for scfg in SUBJECTS_CONFIG:
         sub_id = scfg["id"]
         sub_code = scfg["code"]
         sub_title = scfg["title"]
         md_path = os.path.join(BASE_DIR, scfg["filename"])
-        
-        print(f"Processing {sub_code} ({scfg['filename']})...")
-        units = parse_markdown_subject(md_path, sub_id)
-        
+
+        print(f"▶ Processing {sub_code} ({scfg['filename']})...")
+        try:
+            units = parse_markdown_subject(md_path, sub_id)
+        except Exception as e:
+            print(f"  [ERROR] Failed to parse {md_path}: {e}")
+            continue
+
+        concept_total = sum(len(u["concepts"]) for u in units)
+        print(f"  → {len(units)} units, {concept_total} concepts")
+
         subject_data = {
             "id": sub_id,
             "code": sub_code,
@@ -243,19 +375,17 @@ def build_all():
             "description": scfg["description"],
             "units": units
         }
-        
-        # Write subject JS file
+
         out_file = os.path.join(MCA_SEM1_DIR, f"{sub_id}.js")
         with open(out_file, 'w', encoding='utf-8') as f:
             f.write(f"// StudyPlay Subject Data: {sub_code} - {sub_title}\n")
-            f.write(f"// Generated from university syllabus markdown\n\n")
+            f.write(f"// Generated from university syllabus markdown (v2 — full concept extraction)\n\n")
             f.write("const subjectData = ")
             f.write(json.dumps(subject_data, indent=2, ensure_ascii=False))
             f.write(";\n\nexport default subjectData;\n")
-        
-        print(f"-> Created {out_file} with {len(units)} units and {sum(len(u['concepts']) for u in units)} concepts.")
-        
-        # Populate search index items
+
+        print(f"  → Wrote {out_file}")
+
         for u in units:
             for c in u["concepts"]:
                 search_index.append({
@@ -276,32 +406,32 @@ def build_all():
                     "quizCount": len(c["quiz"]),
                     "flashcardCount": len(c["flashcards"])
                 })
-        
+
         registered_subjects.append({
             "id": sub_id,
             "code": sub_code,
             "title": sub_title,
             "description": scfg["description"],
             "unitsCount": len(units),
-            "conceptsCount": sum(len(u["concepts"]) for u in units),
+            "conceptsCount": concept_total,
             "icon": scfg["icon"]
         })
 
-    # Write search index
+    # ───── Write searchIndex.js ─────
     search_index_file = os.path.join(CONTENT_DIR, "searchIndex.js")
     with open(search_index_file, 'w', encoding='utf-8') as f:
         f.write("// StudyPlay Static Client-Side Search Index\n")
-        f.write("// Contains metadata for instant search without loading lazy subject modules\n\n")
+        f.write("// Auto-generated from source markdown\n\n")
         f.write("export const searchIndex = ")
         f.write(json.dumps(search_index, indent=2, ensure_ascii=False))
         f.write(";\n\nexport default searchIndex;\n")
-    print(f"-> Created {search_index_file} with {len(search_index)} searchable concepts.")
+    print(f"\n→ Wrote searchIndex.js with {len(search_index)} concepts")
 
-    # Write registry.js
+    # ───── Write registry.js ─────
     registry_file = os.path.join(CONTENT_DIR, "registry.js")
     with open(registry_file, 'w', encoding='utf-8') as f:
         f.write("// StudyPlay Content Registry\n")
-        f.write("// Defines degrees, semesters, subjects, metadata, and dynamic import loaders\n\n")
+        f.write("// AUTO-GENERATED — do not edit by hand. Run build_subjects.py to regenerate.\n\n")
         f.write("export const registry = {\n")
         f.write("  degrees: [\n")
         f.write("    {\n")
@@ -317,11 +447,12 @@ def build_all():
         f.write("          subjects: [\n")
         for s in registered_subjects:
             sid = s["id"]
+            desc = s["description"].replace("'", "\\'")
             f.write("            {\n")
             f.write(f"              id: '{sid}',\n")
             f.write(f"              code: '{s['code']}',\n")
             f.write(f"              title: '{s['title']}',\n")
-            f.write(f"              description: '{s['description']}',\n")
+            f.write(f"              description: '{desc}',\n")
             f.write(f"              unitsCount: {s['unitsCount']},\n")
             f.write(f"              conceptsCount: {s['conceptsCount']},\n")
             f.write(f"              icon: '{s['icon']}',\n")
@@ -329,27 +460,9 @@ def build_all():
             f.write("            },\n")
         f.write("          ]\n")
         f.write("        },\n")
-        f.write("        {\n")
-        f.write("          id: 'sem2',\n")
-        f.write("          number: 2,\n")
-        f.write("          name: 'Semester 2',\n")
-        f.write("          isUpcoming: true,\n")
-        f.write("          subjects: []\n")
-        f.write("        },\n")
-        f.write("        {\n")
-        f.write("          id: 'sem3',\n")
-        f.write("          number: 3,\n")
-        f.write("          name: 'Semester 3',\n")
-        f.write("          isUpcoming: true,\n")
-        f.write("          subjects: []\n")
-        f.write("        },\n")
-        f.write("        {\n")
-        f.write("          id: 'sem4',\n")
-        f.write("          number: 4,\n")
-        f.write("          name: 'Semester 4',\n")
-        f.write("          isUpcoming: true,\n")
-        f.write("          subjects: []\n")
-        f.write("        }\n")
+        f.write("        { id: 'sem2', number: 2, name: 'Semester 2', isUpcoming: true, subjects: [] },\n")
+        f.write("        { id: 'sem3', number: 3, name: 'Semester 3', isUpcoming: true, subjects: [] },\n")
+        f.write("        { id: 'sem4', number: 4, name: 'Semester 4', isUpcoming: true, subjects: [] }\n")
         f.write("      ]\n")
         f.write("    },\n")
         f.write("    {\n")
@@ -367,150 +480,19 @@ def build_all():
         f.write("    }\n")
         f.write("  ]\n")
         f.write("};\n\nexport default registry;\n")
-    print(f"-> Created {registry_file}.")
+    print(f"→ Wrote registry.js")
 
-    # Write content/README.md
-    readme_file = os.path.join(CONTENT_DIR, "README.md")
-    with open(readme_file, 'w', encoding='utf-8') as f:
-        f.write("""# StudyPlay Content Architecture & Future Content Workflow
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    for s in registered_subjects:
+        print(f"  {s['code']}: {s['unitsCount']} units, {s['conceptsCount']} concepts")
+    print(f"  TOTAL: {sum(s['conceptsCount'] for s in registered_subjects)} concepts")
+    print("=" * 70)
 
-## Overview
-StudyPlay is an extensible, static study platform built with Vite, React, and Tailwind CSS.
-The platform uses a pure **content-driven architecture** where academic curricula are decoupled from the application logic.
-
-### Hierarchy
-```
-Degree
-  └── Semester
-        └── Subject
-              └── Unit
-                    └── Concept
-```
-
-Every concept contains:
-1. **Interactive Study Notes**: Complete, formatted notes preserving formulas, code, tables, definitions, and ASCII art.
-2. **Relevant Polished SVG Diagrams**: High-definition, dark-theme compatible vector illustrations with gradients and layered depth.
-3. **HARD or SUPER-HARD Quiz**: Multi-step, tricky distractors, edge case problems with instant feedback, scoring, and explanations.
-4. **Flashcards**: Front/back active-recall study cards with 3D flip animation and local mastery tracking.
-
----
-
-## Directory Structure
-```
-content/
-├── README.md               # This documentation
-├── registry.js             # Degree, semester, and subject metadata with dynamic lazy loaders
-├── searchIndex.js          # Fast client-side search index across all concepts
-└── degrees/
-    ├── mca/
-    │   ├── sem1/
-    │   │   ├── ca452.js    # Computer Organization & Architecture
-    │   │   ├── ca453.js    # C Programming
-    │   │   ├── ca454.js    # Unix & Shell Programming
-    │   │   ├── ca455.js    # Software Engineering
-    │   │   └── ca456.js    # Operating System
-    │   ├── sem2/
-    │   ├── sem3/
-    │   └── sem4/
-    └── msc-ai/             # Sacred Heart College MSc AI syllabus
-        ├── sem1/
-        ├── sem2/
-        ├── sem3/
-        └── sem4/
-```
-
----
-
-## Mandatory Workflow for Adding Future Content
-
-> "Add [degree] Sem [N]: read content files [list], convert each file into the StudyPlay concept schema, save the modules under `content/degrees/...`, and register them in `registry.js`. Do not modify the renderers, routing, quiz engine, flashcard engine, search engine, or layout."
-
-### Step-by-Step Procedure:
-
-1. **Prepare Subject Content Module**:
-   Create a JavaScript module under `content/degrees/<degree>/<sem>/<subject-id>.js`.
-   The file must export a default object following the StudyPlay concept schema:
-   ```javascript
-   export default {
-     id: 'ai501',
-     code: 'AI501',
-     title: 'Machine Learning & Neural Networks',
-     degree: 'msc-ai',
-     semester: 1,
-     description: 'Supervised, unsupervised learning, deep architectures and optimization.',
-     units: [
-       {
-         id: 'unit-1',
-         unitNumber: 1,
-         title: 'Foundations of Statistical Learning',
-         co: 'CO1',
-         description: '...',
-         concepts: [
-           {
-             id: 'loss-functions-and-gradients',
-             title: 'Loss Functions, Cost Surfaces & Gradient Descent',
-             subtitle: 'Optimization Landscape & Convergence',
-             summary: 'Analysis of convex vs non-convex loss surfaces, gradient computation, and learning rates.',
-             estimatedMinutes: 20,
-             notes: `## Markdown Study Notes ...`,
-             diagrams: [
-               {
-                 id: 'diag-gradient-descent',
-                 title: 'Gradient Descent Optimization',
-                 caption: '3D contour surface with momentum updates',
-                 svg: '<svg ...>...</svg>'
-               }
-             ],
-             quiz: [
-               {
-                 id: 'q1',
-                 difficulty: 'SUPER-HARD',
-                 type: 'mcq',
-                 question: 'What is the impact of learning rate η on saddle point escape in Stochastic Gradient Descent with Momentum?',
-                 options: ['A', 'B', 'C', 'D'],
-                 correctAnswer: 1,
-                 explanation: '...'
-               }
-             ],
-             flashcards: [
-               {
-                 front: 'What is the vanishing gradient problem in deep networks?',
-                 back: 'During backpropagation, repeated multiplication of small weights/derivatives (< 1) causes gradients to exponentially decay toward zero in early layers.'
-               }
-             ]
-           }
-         ]
-       }
-     ]
-   };
-   ```
-
-2. **Register the Subject in `content/registry.js`**:
-   Add an entry into the target degree and semester's `subjects` array:
-   ```javascript
-   {
-     id: 'ai501',
-     code: 'AI501',
-     title: 'Machine Learning & Neural Networks',
-     description: 'Supervised, unsupervised learning, deep architectures and optimization.',
-     unitsCount: 5,
-     conceptsCount: 15,
-     icon: 'Brain',
-     loader: () => import('./degrees/msc-ai/sem1/ai501.js')
-   }
-   ```
-
-3. **Update the Client Search Index in `content/searchIndex.js`**:
-   Add lightweight metadata for each concept to enable immediate client-side search without eagerly fetching the full module.
-
-4. **Verify Build**:
-   Run:
-   ```bash
-   npm run build
-   ```
-   The application will automatically recognize and render the new degree, semester, units, and concepts without changing a single line of React code!
-""")
-    print(f"-> Created {readme_file}.")
 
 if __name__ == "__main__":
-    build_all()
+    if "--audit" in sys.argv:
+        audit_only()
+    else:
+        build_all()

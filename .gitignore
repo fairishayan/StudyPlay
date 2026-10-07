@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.env
+*_concepts.json
+*_expanded.json
+expand_*.txt
+*.log
+content/degrees/mca/sem1_backup/
