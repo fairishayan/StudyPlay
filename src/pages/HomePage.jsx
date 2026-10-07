@@ -74,7 +74,7 @@ export default function HomePage({ onOpenSearch }) {
               onClick={onOpenSearch}
               className="flex items-center gap-2 px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm shadow-lg shadow-indigo-600/25 transition-all min-h-[44px]"
             >
-              <span>Search 70+ Concepts (⌘K)</span>
+              <span>Search {registry.degrees.flatMap(d => d.semesters).flatMap(s => s.subjects || []).reduce((sum, s) => sum + (s.conceptsCount || 0), 0)}+ Concepts (⌘K)</span>
               <ChevronRight className="w-4 h-4" />
             </button>
 
