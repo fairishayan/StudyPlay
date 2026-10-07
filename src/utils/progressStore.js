@@ -127,7 +127,7 @@ export const progressStore = {
     return data.recentConcept;
   },
 
-  getGlobalStats(totalRegisteredConcepts = 888) {
+  getGlobalStats(totalRegisteredConcepts = 70) {
     const data = getStoredData();
     const completedCount = Object.keys(data.completedConcepts || {}).length;
     

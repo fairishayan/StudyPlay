@@ -18,7 +18,7 @@ import {
 export default function ProgressPage() {
   const { data, getStats, resetAll } = useProgress();
   const [showConfirmReset, setShowConfirmReset] = useState(false);
-  const stats = getStats(registry.degrees.flatMap(d => d.semesters).flatMap(s => s.subjects || []).reduce((sum, s) => sum + (s.conceptsCount || 0), 0));
+  const stats = getStats(70);
 
   const mcaDegree = registry.degrees.find((d) => d.id === 'mca');
   const sem1 = mcaDegree?.semesters?.find((s) => s.id === 'sem1');
