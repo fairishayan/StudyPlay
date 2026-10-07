@@ -1,5 +1,4 @@
 // StudyPlay Subject Data: CA453 - C Programming
-// Notes expanded via DeepSeek
 
 const subjectData = {
   "id": "ca453",

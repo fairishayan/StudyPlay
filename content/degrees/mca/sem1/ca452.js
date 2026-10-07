@@ -1,5 +1,4 @@
 // StudyPlay Subject Data: CA452 - Computer Organization & Architecture
-// Notes expanded via DeepSeek
 
 const subjectData = {
   "id": "ca452",
