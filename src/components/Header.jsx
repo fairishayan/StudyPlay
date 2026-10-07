@@ -17,7 +17,7 @@ export default function Header({ onOpenSearch }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { path } = useRouter();
   const { getStats } = useProgress();
-  const stats = getStats(70);
+  const stats = getStats(registry.degrees.flatMap(d => d.semesters).flatMap(s => s.subjects || []).reduce((sum, s) => sum + (s.conceptsCount || 0), 0));
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-slate-800/80 bg-[#090d16]/90 backdrop-blur-xl transition-all">

@@ -29,7 +29,7 @@ const ICON_MAP = {
 
 export default function HomePage({ onOpenSearch }) {
   const { getStats, data } = useProgress();
-  const stats = getStats(70);
+  const stats = getStats(registry.degrees.flatMap(d => d.semesters).flatMap(s => s.subjects || []).reduce((sum, s) => sum + (s.conceptsCount || 0), 0));
   const mcaDegree = registry.degrees.find((d) => d.id === 'mca');
   const sem1 = mcaDegree?.semesters?.find((s) => s.id === 'sem1');
   const subjects = sem1?.subjects || [];
@@ -138,7 +138,7 @@ export default function HomePage({ onOpenSearch }) {
             <span>•</span>
             <span className="text-white font-bold">23</span> Units
             <span>•</span>
-            <span className="text-white font-bold">70</span> Concepts
+            <span className="text-white font-bold">{registry.degrees.flatMap(d => d.semesters).flatMap(s => s.subjects || []).reduce((sum, s) => sum + (s.conceptsCount || 0), 0)}</span> Concepts
           </div>
         </div>
 
