@@ -7,3 +7,5 @@ dist/
 expand_*.txt
 *.log
 content/degrees/mca/sem1_backup/
+__pycache__/
+*.pyc
